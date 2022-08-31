@@ -14,6 +14,9 @@ then complain that it doesn't work.
 This does not include the HackMii Installer bundle. Those files would go
 compressed in `bundle.zip`.
 
+NOTE: This does not work over the `file://` protocol. Please use with a
+webserver. A quick one is: `python3 -m http.server`
+
 ### License
 
 GPL-2.0
