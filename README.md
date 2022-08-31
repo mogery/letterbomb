@@ -1,7 +1,7 @@
-## LetterBomb web service implementation
+## LetterBomb client-side-only implementation
 
-This is the LetterBomb Wii System Menu 4.3 exploit implementation running on
-https://please.hackmii.com/. Requires Python 2.7, Flask, and geoip2.
+This is the LetterBomb Wii System Menu 4.3 exploit implementation, modified
+to work without a backend.
 
 In case you're wondering, `country_regions.txt` is based on reporting data
 from Homebrew Channel updates. This was implemented because we found out
@@ -12,7 +12,7 @@ implemented because people would type in garbage for the MAC address and
 then complain that it doesn't work.
 
 This does not include the HackMii Installer bundle. Those files would go
-in `bundle/`.
+compressed in `bundle.zip`.
 
 ### License
 

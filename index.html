@@ -1,0 +1,214 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+	<title>LetterBomb</title>
+	<link rel="stylesheet" type="text/css" href="mac.css" />
+	<script src="jszip.min.js"></script>
+	<script src="sha1.js"></script>
+	<script type="text/javascript">
+		function keyHandler(e, obj, next) {
+			if (window.event) { // IE
+				keynum = e.keyCode;
+			} else if (e.which) { // sane browsers 
+				keynum = e.which;
+			}
+			if (keynum == 0x08 || keynum == 0x09 || (keynum >= 96 && keynum <= 105))
+				return true;
+			keychar = String.fromCharCode(keynum);
+			if (keychar.match(/[0-9A-F]/) == null) {
+				return false;
+			} else {
+				return true;
+			}
+		}
+
+		function doNext(obj, next) {
+			if (obj.value.length == 2 && next != null) {
+				document.getElementById(next).value = '';
+				document.getElementById(next).focus();
+			}
+			update();
+		}
+
+		function getRegion() {
+			return ["U", "E", "J", "K"].find(x => document.getElementById("region_" + x).checked);
+		}
+		
+		function getMAC() {
+			return ["a", "b", "c", "d", "e", "f"].map(x => document.getElementById(x).value).join("").toUpperCase();
+		}
+
+		function update() {
+			let ok = getRegion() && getMAC().match(/^[0-9A-F]{12}$/);
+			["", "2"].forEach(x => document.getElementById("submit_btn" + x).disabled = !ok);
+		}
+
+		function showError(text) {
+			document.getElementById("error").innerText = text;
+			document.getElementById("error").style.display = "block";
+		}
+
+		async function haxx() {
+			let region = getRegion();
+			if (!region) {
+				return showError("Please pick a region.")
+			}
+			console.log("Region:", region);
+
+			let mac = getMAC();
+			if (!mac.match(/^[0-9A-F]{12}$/)) {
+				return showError("Invalid MAC address.")
+			}
+			console.log("MAC:", mac);
+
+			if (mac == "0017AB999999") {
+				return showError("If you're using Dolphin, try File->Open instead ;-).")
+			}
+
+			let ouiReq = await fetch("oui_list.txt");
+			if (ouiReq.status >= 400) {
+				return showError("Failed to fetch OUI list.");
+			}
+
+			let ouiList = (await ouiReq.text()).split("\n").map(x => x.trim()).filter(x => x);
+			if (!ouiList.find(x => mac.startsWith(x))) {
+				return showError("The exploit will only work if you enter your Wii's MAC address.")
+			}
+
+			let dt = new Date();
+			dt.setDate(dt.getDate() - 1);
+			let timestamp = Math.floor((dt - Date.UTC(2000, 0, 1)) / 1000);
+			console.log("Timestamp:", timestamp);
+
+			let sha1 = new jsSHA("SHA-1", "UINT8ARRAY");
+			sha1.update(new Uint8Array([
+				parseInt(mac.slice(0, 2), 16),
+				parseInt(mac.slice(2, 4), 16),
+				parseInt(mac.slice(4, 6), 16),
+				parseInt(mac.slice(6, 8), 16),
+				parseInt(mac.slice(8, 10), 16),
+				parseInt(mac.slice(10, 12), 16),
+				0x75, 0x79, 0x79
+			]));
+			let key = [...sha1.getHash("UINT8ARRAY")]
+			let keyStr = key.map(x => x.toString(16).padStart(2, "0").toUpperCase()).join("");
+			console.log("Key:", keyStr);
+
+			let blobReq = await fetch("template" + region + ".bin");
+			if (blobReq.status >= 400) {
+				return showError("Failed to fetch blob.");
+			}
+
+			let blob = await blobReq.arrayBuffer();
+			let blobView = new DataView(blob);
+
+			for (let i = 0; i < 8; i++) {
+				blobView.setUint8(0x08 + i, key[i]);
+			}
+
+			for (let i = 0; i < 20; i++) {
+				blobView.setUint8(0xB0 + i, 0);
+			}
+
+			blobView.setUint32(0x7C, timestamp, false);
+
+			let timestampStr = timestamp.toString().padStart(10, "0");
+			for (let i = 0; i < 10; i++) {
+				blobView.setUint8(0x80 + i, timestampStr.charCodeAt(i));
+			}
+
+			let hmacObj = new jsSHA("SHA-1", "UINT8ARRAY", {
+				hmacKey: { value: new Uint8Array(key.slice(8)), format: "UINT8ARRAY" }
+			});
+			hmacObj.update(new Uint8Array(blob));
+			let hmac = [...hmacObj.getHash("UINT8ARRAY")];
+
+			for (let i = 0; i < 20; i++) {
+				blobView.setUint8(0xB0 + i, hmac[i]);
+			}
+
+			let shouldBundle = document.getElementById("bundle").checked;
+			
+			let zip = new JSZip();
+			if (shouldBundle) {
+				let bundleReq = await fetch("bundle.zip");
+				if (bundleReq.status >= 400) {
+					return showError("Failed to fetch HackMii bundle.");
+				}
+
+				await zip.loadAsync(await bundleReq.arrayBuffer());
+			}
+
+			zip.file(`private/wii/title/HAEA/${
+				keyStr.slice(0, 8)
+			}/${
+				keyStr.slice(8, 16)
+			}/${
+				dt.getUTCFullYear()
+			}/${
+				dt.getUTCMonth().toString().padStart(2, "0")
+			}/${
+				dt.getUTCDate().toString().padStart(2, "0")
+			}/${
+				dt.getUTCHours().toString().padStart(2, "0")
+			}/${
+				dt.getUTCMinutes().toString().padStart(2, "0")
+			}/HABA_#1/txt/${
+				timestamp.toString(16).padStart(8, "0").toUpperCase()
+			}.000`, blob);
+
+			let zipBlob = await zip.generateAsync({ type: "blob" });
+
+			let link = document.createElement('a');
+			link.href = URL.createObjectURL(zipBlob);
+			link.download = "LetterBomb.zip";
+			link.click();
+		}
+	</script>
+</head>
+<body>
+	<img src='letterbomb_icon.png' style="margin-bottom: -30px;" />
+	<h1>LetterBomb</h1>
+	<div>
+		<h2>System Menu Version</h2>
+		<input type='radio' id='region_U' name='region' value='U'>4.3U
+		<input type='radio' id='region_E' name='region' value='E'>4.3E
+		<input type='radio' id='region_J' name='region' value='J'>4.3J
+		<input type='radio' id='region_K' name='region' value='K'>4.3K
+	</div>
+
+	<div>
+		<h2>MAC Address</h2>
+		<input type='text' maxlength='2' size='2' id='a' class='box' onkeydown="return keyHandler(event);" onkeyup="doNext(this, 'b');" placeholder='AA' />
+		<input type='text' maxlength='2' size='2' id='b' class='box' onkeydown="return keyHandler(event);" onkeyup="doNext(this, 'c');" placeholder='BB' />
+		<input type='text' maxlength='2' size='2' id='c' class='box' onkeydown="return keyHandler(event);" onkeyup="doNext(this, 'd');" placeholder='CC' />
+		<input type='text' maxlength='2' size='2' id='d' class='box' onkeydown="return keyHandler(event);" onkeyup="doNext(this, 'e');" placeholder='DD' />
+		<input type='text' maxlength='2' size='2' id='e' class='box' onkeydown="return keyHandler(event);" onkeyup="doNext(this, 'f');" placeholder='EE' />
+		<input type='text' maxlength='2' size='2' id='f' class='box' onkeydown="return keyHandler(event);" onkeyup="update();" placeholder='FF' />
+		<br />Necessary to create and sign the correct file
+	</div>
+
+	<p>
+		<input type='checkbox' id='bundle' value='1' checked /> <b>Bundle the HackMii Installer for me!</b>
+	</p>
+
+	<div id="error" style="color: red; font-weight: bold; font-size: 18pt; display: none;">error</div>
+
+	<noscript>
+		<div style="color: red; font-weight: bold; font-size: 18pt;" id="nojs">You must have JavaScript enabled to use this site.</div>
+	</noscript>
+
+	<p>
+		<input type='submit' value='Cut the red wire' id='submit_btn' class='button buttonr' onclick="haxx();" disabled />
+		<input type='submit' value='Cut the blue wire' id='submit_btn2' class='button buttonb' onclick="haxx();" disabled />
+	</p>
+
+	<script>
+		const tzInfo = "America/Aruba U\nAmerica/Puerto_Rico U\nAfrica/Lagos E\nAfrica/Luanda E\nAmerica/Anguilla U\nEurope/Helsinki E\nEurope/Mariehamn E\nEurope/Tirane E\nEurope/Andorra E\nAsia/Dubai U\nAmerica/Argentina/Buenos_Aires U\nAmerica/Argentina/Catamarca U\nAmerica/Argentina/ComodRivadavia U\nAmerica/Argentina/Cordoba U\nAmerica/Argentina/Jujuy U\nAmerica/Argentina/La_Rioja U\nAmerica/Argentina/Mendoza U\nAmerica/Argentina/Rio_Gallegos U\nAmerica/Argentina/Salta U\nAmerica/Argentina/San_Juan U\nAmerica/Argentina/San_Luis U\nAmerica/Argentina/Tucuman U\nAmerica/Argentina/Ushuaia U\nAmerica/Buenos_Aires U\nAmerica/Catamarca U\nAmerica/Cordoba U\nAmerica/Jujuy U\nAmerica/Mendoza U\nAmerica/Rosario U\nAsia/Yerevan U\nPacific/Pago_Pago U\nAmerica/Antigua U\nAntarctica/Macquarie E\nAustralia/ACT E\nAustralia/Adelaide E\nAustralia/Brisbane E\nAustralia/Broken_Hill E\nAustralia/Canberra E\nAustralia/Currie E\nAustralia/Darwin E\nAustralia/Eucla E\nAustralia/Hobart E\nAustralia/LHI E\nAustralia/Lindeman E\nAustralia/Lord_Howe E\nAustralia/Melbourne E\nAustralia/North E\nAustralia/NSW E\nAustralia/Perth E\nAustralia/Queensland E\nAustralia/South E\nAustralia/Sydney E\nAustralia/Tasmania E\nAustralia/Victoria E\nAustralia/West E\nAustralia/Yancowinna E\nEurope/Vienna E\nAsia/Baku E\nEurope/Brussels E\nAfrica/Porto-Novo E\nAfrica/Abidjan E\nAfrica/Ouagadougou E\nAsia/Dacca U\nAsia/Dhaka U\nEurope/Sofia E\nAsia/Bahrain U\nAsia/Qatar U\nAmerica/Nassau U\nAmerica/Toronto U\nEurope/Belgrade E\nEurope/Sarajevo E\nEurope/Minsk E\nAmerica/Belize U\nAtlantic/Bermuda U\nAmerica/La_Paz U\nAmerica/Araguaina U\nAmerica/Bahia U\nAmerica/Belem U\nAmerica/Boa_Vista U\nAmerica/Campo_Grande U\nAmerica/Cuiaba U\nAmerica/Eirunepe U\nAmerica/Fortaleza U\nAmerica/Maceio U\nAmerica/Manaus U\nAmerica/Noronha U\nAmerica/Porto_Acre U\nAmerica/Porto_Velho U\nAmerica/Recife U\nAmerica/Rio_Branco U\nAmerica/Santarem U\nAmerica/Sao_Paulo U\nBrazil/Acre U\nBrazil/DeNoronha U\nBrazil/East U\nBrazil/West U\nAmerica/Barbados U\nAsia/Brunei U\nAsia/Kuching U\nAfrica/Gaborone E\nAfrica/Maputo E\nAfrica/Bangui E\nAmerica/Atikokan U\nAmerica/Blanc-Sablon U\nAmerica/Cambridge_Bay U\nAmerica/Coral_Harbour U\nAmerica/Creston U\nAmerica/Dawson U\nAmerica/Dawson_Creek U\nAmerica/Edmonton U\nAmerica/Fort_Nelson U\nAmerica/Glace_Bay U\nAmerica/Goose_Bay U\nAmerica/Halifax U\nAmerica/Inuvik U\nAmerica/Iqaluit U\nAmerica/Moncton U\nAmerica/Montreal U\nAmerica/Nipigon U\nAmerica/Panama U\nAmerica/Pangnirtung U\nAmerica/Phoenix U\nAmerica/Rainy_River U\nAmerica/Rankin_Inlet U\nAmerica/Regina U\nAmerica/Resolute U\nAmerica/St_Johns U\nAmerica/Swift_Current U\nAmerica/Thunder_Bay U\nAmerica/Vancouver U\nAmerica/Whitehorse U\nAmerica/Winnipeg U\nAmerica/Yellowknife U\nCanada/Atlantic U\nCanada/Central U\nCanada/Eastern U\nCanada/Mountain U\nCanada/Newfoundland U\nCanada/Pacific U\nCanada/Saskatchewan U\nCanada/Yukon U\nEurope/Zurich E\nAmerica/Punta_Arenas U\nAmerica/Santiago U\nChile/Continental U\nChile/EasterIsland U\nPacific/Easter U\nAsia/Chongqing U\nAsia/Chungking U\nAsia/Harbin U\nAsia/Kashgar U\nAsia/Shanghai U\nAsia/Urumqi U\nPRC U\nAfrica/Douala E\nAfrica/Kinshasa E\nAfrica/Lubumbashi E\nAmerica/Bogota U\nAtlantic/Cape_Verde E\nAmerica/Costa_Rica U\nAmerica/Havana U\nCuba U\nAmerica/Cayman U\nAsia/Famagusta E\nAsia/Nicosia E\nEurope/Nicosia E\nEurope/Prague E\nEurope/Berlin E\nEurope/Busingen E\nAfrica/Djibouti E\nAfrica/Nairobi E\nAmerica/Dominica U\nEurope/Copenhagen E\nAmerica/Santo_Domingo U\nAfrica/Algiers E\nAmerica/Guayaquil U\nPacific/Galapagos U\nAfrica/Cairo U\nEgypt U\nAfrica/Asmara E\nAfrica/Asmera E\nAfrica/Ceuta E\nAtlantic/Canary E\nEurope/Madrid E\nEurope/Tallinn E\nPacific/Fiji E\nAtlantic/Stanley E\nEurope/Paris E\nAtlantic/Faeroe E\nAtlantic/Faroe E\nPacific/Chuuk U\nPacific/Guadalcanal U\nPacific/Kosrae U\nPacific/Pohnpei U\nPacific/Ponape U\nPacific/Port_Moresby U\nPacific/Truk U\nPacific/Yap U\nAfrica/Libreville E\nEurope/Belfast E\nEurope/London E\nGB E\nGB-Eire E\nAsia/Tbilisi U\nEurope/Guernsey E\nAfrica/Accra E\nEurope/Gibraltar E\nAmerica/Guadeloupe E\nAfrica/Malabo E\nEurope/Athens E\nAmerica/Grenada U\nAmerica/Danmarkshavn E\nAmerica/Godthab E\nAmerica/Nuuk E\nAmerica/Scoresbysund E\nAmerica/Thule E\nAmerica/Guatemala U\nPacific/Guam U\nAmerica/Guyana U\nAsia/Hong_Kong J\nHongkong J\nAmerica/Tegucigalpa U\nEurope/Zagreb E\nAmerica/Port-au-Prince U\nEurope/Budapest E\nAsia/Jakarta U\nAsia/Jayapura U\nAsia/Makassar U\nAsia/Pontianak U\nAsia/Ujung_Pandang U\nEurope/Isle_of_Man E\nAsia/Calcutta U\nAsia/Kolkata U\nIndian/Chagos U\nEire E\nEurope/Dublin E\nAsia/Tehran U\nIran U\nAsia/Baghdad U\nAtlantic/Reykjavik E\nIceland E\nAsia/Jerusalem E\nAsia/Tel_Aviv E\nIsrael E\nEurope/Rome E\nAmerica/Jamaica U\nJamaica U\nEurope/Jersey E\nAsia/Amman U\nAsia/Tokyo J\nJapan J\nAsia/Almaty E\nAsia/Aqtau E\nAsia/Aqtobe E\nAsia/Atyrau E\nAsia/Oral E\nAsia/Qostanay E\nAsia/Qyzylorda E\nAsia/Bishkek U\nAsia/Bangkok U\nAsia/Phnom_Penh U\nAmerica/St_Kitts U\nAsia/Seoul K\nROK K\nAsia/Kuwait U\nAsia/Riyadh U\nAsia/Vientiane U\nAsia/Beirut U\nAfrica/Tripoli E\nLibya E\nAmerica/St_Lucia U\nEurope/Vaduz E\nAsia/Colombo E\nEurope/Vilnius E\nEurope/Luxembourg E\nEurope/Riga E\nAsia/Macao J\nAsia/Macau J\nAmerica/Marigot E\nAfrica/Casablanca E\nEurope/Monaco E\nEurope/Chisinau E\nEurope/Tiraspol E\nIndian/Antananarivo E\nIndian/Maldives U\nAmerica/Bahia_Banderas U\nAmerica/Cancun U\nAmerica/Chihuahua U\nAmerica/Ensenada U\nAmerica/Hermosillo U\nAmerica/Matamoros U\nAmerica/Mazatlan U\nAmerica/Merida U\nAmerica/Mexico_City U\nAmerica/Monterrey U\nAmerica/Ojinaga U\nAmerica/Santa_Isabel U\nAmerica/Tijuana U\nMexico/BajaNorte U\nMexico/BajaSur U\nMexico/General U\nKwajalein U\nPacific/Kwajalein U\nPacific/Majuro U\nPacific/Tarawa U\nEurope/Skopje E\nAfrica/Bamako E\nAfrica/Timbuktu E\nEurope/Malta E\nAsia/Rangoon U\nAsia/Yangon U\nEurope/Podgorica E\nAsia/Choibalsan U\nAsia/Hovd U\nAsia/Ulaanbaatar U\nAsia/Ulan_Bator U\nPacific/Saipan U\nAfrica/Nouakchott E\nAmerica/Martinique E\nIndian/Mauritius E\nAfrica/Blantyre E\nAsia/Kuala_Lumpur U\nAsia/Singapore U\nAfrica/Windhoek E\nPacific/Noumea E\nAfrica/Niamey E\nPacific/Norfolk E\nAmerica/Managua U\nEurope/Amsterdam E\nEurope/Oslo E\nAsia/Kathmandu U\nAsia/Katmandu U\nNZ E\nNZ-CHAT E\nPacific/Auckland E\nPacific/Chatham E\nAsia/Muscat U\nAsia/Karachi U\nAmerica/Lima U\nAsia/Manila U\nPacific/Bougainville E\nEurope/Warsaw E\nPoland E\nAtlantic/Azores E\nAtlantic/Madeira E\nEurope/Lisbon E\nPortugal E\nAmerica/Asuncion U\nAsia/Gaza U\nAsia/Hebron U\nPacific/Gambier E\nPacific/Marquesas E\nPacific/Tahiti E\nIndian/Reunion E\nEurope/Bucharest E\nAsia/Anadyr E\nAsia/Barnaul E\nAsia/Chita E\nAsia/Irkutsk E\nAsia/Kamchatka E\nAsia/Khandyga E\nAsia/Krasnoyarsk E\nAsia/Magadan E\nAsia/Novokuznetsk E\nAsia/Novosibirsk E\nAsia/Omsk E\nAsia/Sakhalin E\nAsia/Srednekolymsk E\nAsia/Tomsk E\nAsia/Ust-Nera E\nAsia/Vladivostok E\nAsia/Yakutsk E\nAsia/Yekaterinburg E\nEurope/Astrakhan E\nEurope/Kaliningrad E\nEurope/Kirov E\nEurope/Moscow E\nEurope/Samara E\nEurope/Saratov E\nEurope/Simferopol E\nEurope/Ulyanovsk E\nEurope/Volgograd E\nW-SU E\nAfrica/Khartoum U\nAfrica/Dakar E\nSingapore U\nAmerica/El_Salvador U\nEurope/San_Marino E\nAmerica/Miquelon E\nAmerica/Paramaribo U\nEurope/Bratislava E\nEurope/Ljubljana E\nEurope/Stockholm E\nAfrica/Johannesburg E\nAfrica/Mbabane E\nIndian/Mahe U\nAsia/Damascus U\nAmerica/Grand_Turk U\nAfrica/Lome J\nAsia/Dushanbe U\nPacific/Fakaofo U\nAsia/Ashgabat E\nAsia/Ashkhabad E\nAsia/Dili E\nAmerica/Port_of_Spain U\nPacific/Tongatapu E\nAsia/Istanbul E\nEurope/Istanbul E\nTurkey E\nAsia/Taipei J\nROC J\nAfrica/Dar_es_Salaam U\nAfrica/Kampala U\nEurope/Kiev E\nEurope/Kyiv E\nEurope/Uzhgorod E\nEurope/Zaporozhye E\nAmerica/Montevideo U\nAmerica/Adak U\nAmerica/Anchorage U\nAmerica/Atka U\nAmerica/Boise U\nAmerica/Chicago U\nAmerica/Denver U\nAmerica/Detroit U\nAmerica/Fort_Wayne U\nAmerica/Indiana/Indianapolis U\nAmerica/Indiana/Knox U\nAmerica/Indiana/Marengo U\nAmerica/Indiana/Petersburg U\nAmerica/Indiana/Tell_City U\nAmerica/Indiana/Vevay U\nAmerica/Indiana/Vincennes U\nAmerica/Indiana/Winamac U\nAmerica/Indianapolis U\nAmerica/Juneau U\nAmerica/Kentucky/Louisville U\nAmerica/Kentucky/Monticello U\nAmerica/Knox_IN U\nAmerica/Los_Angeles U\nAmerica/Louisville U\nAmerica/Menominee U\nAmerica/Metlakatla U\nAmerica/New_York U\nAmerica/Nome U\nAmerica/North_Dakota/Beulah U\nAmerica/North_Dakota/Center U\nAmerica/North_Dakota/New_Salem U\nAmerica/Shiprock U\nAmerica/Sitka U\nAmerica/Yakutat U\nNavajo U\nPacific/Honolulu U\nUS/Alaska U\nUS/Aleutian U\nUS/Arizona U\nUS/Central U\nUS/East-Indiana U\nUS/Eastern U\nUS/Hawaii U\nUS/Indiana-Starke U\nUS/Michigan U\nUS/Mountain U\nUS/Pacific U\nAsia/Samarkand U\nAsia/Tashkent U\nEurope/Vatican U\nAmerica/St_Vincent U\nAmerica/Caracas U\nAmerica/Tortola U\nAmerica/St_Thomas U\nAmerica/Virgin U\nAsia/Ho_Chi_Minh U\nAsia/Saigon U\nPacific/Efate E\nAsia/Aden U\nIndian/Mayotte E\nAfrica/Lusaka U\nAfrica/Harare E".split("\n").map(x => x.split(" "));
+		let predictedRegion = tzInfo.find(x => x[0] == Intl.DateTimeFormat().resolvedOptions().timeZone);
+		if (predictedRegion) {
+			document.getElementById("region_" + predictedRegion[1]).checked = true;
+		}
+	</script>
+</body>
+</html>
